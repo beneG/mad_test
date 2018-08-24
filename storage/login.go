@@ -16,9 +16,26 @@ type LoggedInUserStruct struct {
 
 var loggedInUsers = make(map[string]LoggedInUserStruct) // key is token
 
+func init() {
+	go expireLoggedInUsers()
+}
+
+func expireLoggedInUsers() {
+	for {
+		for key, s := range loggedInUsers {
+			elapsed := time.Now().Sub(s.LoginTime)
+			if elapsed.Minutes() > 30 {
+				delete(loggedInUsers, key)
+			}
+		}
+		time.Sleep(10 * time.Second)
+	}
+}
+
 func loggedInUserLookup(username string) (token string, isLoggedIn bool) {
 	for tok, u := range loggedInUsers {
 		if u.User.UserName == username {
+			u.LoginTime = time.Now()
 			return tok, true
 		}
 	}
