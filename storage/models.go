@@ -1,10 +1,21 @@
-package task
+package storage
 
 import (
 	"time"
 
 	"../currency"
 )
+
+// User : structure for user
+type User struct {
+	ID           int
+	IsAdmin      bool
+	UserName     string
+	PasswordHash string
+	Email        string
+	Balance      currency.Money
+	FrozenAmount currency.Money
+}
 
 // State : state of task
 type State int

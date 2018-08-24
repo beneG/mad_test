@@ -1,230 +1,248 @@
 package storage
 
 import (
-	"crypto/md5"
-	"crypto/rand"
-	"fmt"
-	"log"
-	"sync/atomic"
+	"database/sql"
 	"time"
 
 	"../currency"
-	"../task"
-	"../user"
+	"github.com/VividCortex/mysqlerr"
+	"github.com/go-sql-driver/mysql"
+	"github.com/jmoiron/sqlx"
 )
 
-// LoggedInUserStruct : structure to keep user and loggedin time
-type LoggedInUserStruct struct {
-	User      user.User
-	LoginTime time.Time
+const timeStringLayout = "2006-01-02 15:04:05"
+
+type dbUser struct {
+	ID           int     `db:"id"`
+	IsAdmin      bool    `db:"is_admin"`
+	UserName     string  `db:"user_name"`
+	PasswordHash string  `db:"password_hash"`
+	Email        string  `db:"email"`
+	Balance      float64 `db:"balance"`
+	FrozenAmount float64 `db:"frozen_amount"`
 }
 
-var users map[int]user.User
-var tasks map[int]task.Task
-var usersMaxID uint32
-var tasksMaxID uint32
-
-var loggedInUsers map[string]LoggedInUserStruct
-
-// Init : this func has to be called before using storage
-func Init() {
-	users = make(map[int]user.User)
-	tasks = make(map[int]task.Task)
-	loggedInUsers = make(map[string]LoggedInUserStruct)
-
-	// init 3 users
-	users[1] = user.User{
-		ID:           1,
-		IsAdmin:      true,
-		UserName:     "admin",
-		PasswordHash: "482c811da5d5b4bc6d497ffa98491e38", // md5 hash for "password123" string
-		Email:        "admin@domain.com",
-		Balance:      currency.MoneyCtr(0.0)}
-	users[2] = user.User{
-		ID:           2,
-		IsAdmin:      false,
-		UserName:     "nurbek",
-		PasswordHash: "482c811da5d5b4bc6d497ffa98491e38",
-		Email:        "nasanbekov@gmail.com",
-		Balance:      currency.MoneyCtr(1.000000123)}
-	users[3] = user.User{
-		ID:           3,
-		IsAdmin:      false,
-		UserName:     "emil",
-		PasswordHash: "482c811da5d5b4bc6d497ffa98491e38",
-		Email:        "emilasanbekov@gmail.com",
-		Balance:      currency.MoneyCtr(100.12)}
-
-	usersMaxID = 3
-
-	// init 4 tasks
-	tasks[1] = task.Task{
-		ID:            1,
-		CustomerID:    2,
-		ExecutionerID: 0,
-		Title:         "Make online shop",
-		State:         task.StateFree,
-		Cost:          currency.MoneyCtr(100.12)}
-	tasks[2] = task.Task{
-		ID:            2,
-		CustomerID:    3,
-		ExecutionerID: 0,
-		Title:         "Fix bug in network library",
-		State:         task.StateFree,
-		Cost:          currency.MoneyCtr(200.0001)}
-	tasks[3] = task.Task{
-		ID:            3,
-		CustomerID:    2,
-		ExecutionerID: 0,
-		Title:         "Create dating site",
-		State:         task.StateFree,
-		Cost:          currency.MoneyCtr(321.000000123)}
-	tasks[4] = task.Task{
-		ID:            4,
-		CustomerID:    3,
-		ExecutionerID: 0,
-		Title:         "Create company logo",
-		State:         task.StateFree,
-		Cost:          currency.MoneyCtr(412.512)}
-
-	tasksMaxID = 4
-
-	log.Println("storage has been filled with sample data")
+type dbTask struct {
+	ID            int     `db:"id"`
+	CustomerID    int     `db:"customer_id"`
+	ExecutionerID int     `db:"executor_id"`
+	Title         string  `db:"title"`
+	State         int     `db:"status"`
+	Cost          float64 `db:"cost"`
+	Problem       string  `db:"problem"`
+	Solution      string  `db:"solution"`
+	BeginTime     string  `db:"begin_time"`
+	EndTime       string  `db:"end_time"`
 }
 
-// GetNextUserID : for user.User id field in new records
-func GetNextUserID() int {
-	atomic.AddUint32(&usersMaxID, 1)
-	return int(usersMaxID)
-}
+var connection *sqlx.DB
 
-// GetNextTaskID : for task.Task id field in new records
-func GetNextTaskID() int {
-	atomic.AddUint32(&tasksMaxID, 1)
-	return int(tasksMaxID)
-}
-
-func generateToken() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return fmt.Sprintf("%x", b)
-}
-
-// TokenLookup : lookup value in loggedInUsers by token key
-func TokenLookup(token string) (u *LoggedInUserStruct, isTokenExist bool) {
-	l, exist := loggedInUsers[token]
-	if exist {
-		return &l, true
-	}
-	return nil, false
-}
-
-func loggedInUserLookup(username string) (token string, isLoggedIn bool) {
-	for tok, u := range loggedInUsers {
-		if u.User.UserName == username {
-			return tok, true
+func init() {
+	if connection == nil {
+		conn, err := sqlx.Connect("mysql", "seth:123@tcp(127.0.0.1:3306)/freelance_stock")
+		if err != nil {
+			panic(err)
 		}
+		connection = conn
 	}
-	return "", false
 }
 
-// Login : logging in a user
-func Login(username, password string) (u *LoggedInUserStruct, token string, errorCode int) {
-	for /*id*/ _, user := range users {
-		if user.UserName == username {
-			hash := fmt.Sprintf("%x", md5.Sum([]byte(password)))
-			if hash == user.PasswordHash {
-				token, isLoggedIn := loggedInUserLookup(username)
-				if !isLoggedIn {
-					token = generateToken()
-				}
-				loggedInUser := LoggedInUserStruct{User: user, LoginTime: time.Now()}
-				loggedInUsers[token] = loggedInUser
-				return &loggedInUser, token, 0 // errorCode OK
-			}
-			return nil, "", 1 // errorCode username and password mismatch
+func dbUserToUser(val *dbUser) *User {
+	retVal := User{
+		ID:           val.ID,
+		IsAdmin:      val.IsAdmin,
+		UserName:     val.UserName,
+		PasswordHash: val.PasswordHash,
+		Email:        val.Email,
+		Balance:      currency.MoneyCtr(val.Balance),
+		FrozenAmount: currency.MoneyCtr(val.FrozenAmount)}
+	return &retVal
+}
+
+func userToDbUser(val *User) dbUser {
+	return dbUser{
+		ID:           val.ID,
+		IsAdmin:      val.IsAdmin,
+		UserName:     val.UserName,
+		PasswordHash: val.PasswordHash,
+		Email:        val.Email,
+		Balance:      val.Balance.GetVal(),
+		FrozenAmount: val.FrozenAmount.GetVal()}
+}
+
+func dbTaskToTask(val *dbTask) *Task {
+	beginTime, _ := time.Parse(timeStringLayout, val.BeginTime)
+	endTime, _ := time.Parse(timeStringLayout, val.EndTime)
+	retVal := Task{
+		ID:            val.ID,
+		CustomerID:    val.CustomerID,
+		ExecutionerID: val.ExecutionerID,
+		Title:         val.Title,
+		State:         State(val.State),
+		Cost:          currency.MoneyCtr(val.Cost),
+		Problem:       val.Problem,
+		Solution:      val.Solution,
+		BeginTime:     beginTime,
+		EndTime:       endTime}
+	return &retVal
+}
+
+func taskToDbTask(val *Task) dbTask {
+	return dbTask{
+		ID:            val.ID,
+		CustomerID:    val.CustomerID,
+		ExecutionerID: val.ExecutionerID,
+		Title:         val.Title,
+		State:         int(val.State),
+		Cost:          val.Cost.GetVal(),
+		Problem:       val.Problem,
+		Solution:      val.Solution,
+		BeginTime:     val.BeginTime.Format(timeStringLayout),
+		EndTime:       val.EndTime.Format(timeStringLayout)}
+}
+
+// GetTaskByID retruns task structure by it's ID
+func GetTaskByID(ID int) (task *Task, isTaskPresent bool) {
+	var dbT dbTask
+	err := connection.Get(&dbT, "SELECT * FROM tasks WHERE id=?", ID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false
 		}
+		panic(err)
 	}
-	return nil, "", 2 // errorCode username is not registred
+	return dbTaskToTask(&dbT), true
 }
 
-// IsUserRegistred : check if user is in our storage
-func IsUserRegistred(username string) bool {
-	for /*id*/ _, user := range users {
-		if user.UserName == username {
-			return true
+/*
+func GetAllTasksNew() (tasks []*task.Task) {
+	var dbT dbTask
+	selectedTasks []*task.Task
+	err := connection.Get(&dbT, "SELECT * FROM tasks WHERE id IN ?, ?, ?, ?",
+		0, 1, 2, 3)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
 		}
+		panic(err)
 	}
-	return false
+	return dbTaskToTask(&dbT)
+}*/
+
+func CreateNewTask(customerID int, title string, cost currency.Money, problem string) (taskID int, isTaskCreated bool) {
+	res, err := connection.Exec("INSERT INTO tasks (customer_id, executor_id, title, status, cost, problem, solution) VALUES(?, 0, ?, 0, ?, ?, \"\")",
+		customerID,
+		title,
+		cost.GetVal(),
+		problem)
+	if err != nil {
+		panic(err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		panic(err)
+	}
+	return int(id), true
 }
 
-// CreateUser : remove user from storage
-func CreateUser(login, passwordHash, email string) bool {
-	if IsUserRegistred(login) {
+func UpdateTask(task *Task) {
+	dbT := taskToDbTask(task)
+	_, err := connection.Exec("UPDATE tasks set customer_id=?, executor_id=?, title=?, status=?, cost=?, problem=?, solution=?, begin_time=?, end_time=? where id=?",
+		dbT.CustomerID,
+		dbT.ExecutionerID,
+		dbT.Title,
+		dbT.State,
+		dbT.Cost,
+		dbT.Problem,
+		dbT.Solution,
+		dbT.BeginTime,
+		dbT.EndTime,
+		dbT.ID)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func DeleteTask(taskID int) (isDeleted bool) {
+	_, err := connection.Exec("DELETE FROM tasks WHERE id=?", taskID)
+	if err != nil {
 		return false
 	}
-	id := GetNextUserID()
-	newUser := user.User{
-		ID:           id,
-		IsAdmin:      false,
-		UserName:     login,
-		PasswordHash: passwordHash,
-		Email:        email,
-		Balance:      currency.MoneyCtr(0.0)}
-	users[id] = newUser
 	return true
 }
 
-// DeleteUserByName : remove user from storage
-func DeleteUserByName(username string) bool {
-	for id, user := range users {
-		if user.UserName == username {
-			delete(users, id)
-			return true
+func GetUserByName(userName string) (user *User, isUserPresent bool) {
+	var dbU dbUser
+	err := connection.Get(&dbU, "SELECT * FROM users WHERE user_name=?", userName)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false
 		}
+		panic(err)
 	}
-	return false
+	return dbUserToUser(&dbU), true
 }
 
-// UpdateUser : just update user in storage
-func UpdateUser(username string, user *user.User) bool {
-	for id, u := range users {
-		if u.UserName == username {
-			users[id] = *user
-			return true
+func GetUserByID(userID int) (user *User, isUserPresent bool) {
+	var dbU dbUser
+	err := connection.Get(&dbU, "SELECT * FROM users WHERE id=?", userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false
 		}
+		panic(err)
 	}
-	return false
+	return dbUserToUser(&dbU), true
 }
 
-// GetUserByName : get user struct by his username
-func GetUserByName(username string) *user.User {
-	for /*id*/ _, u := range users {
-		if u.UserName == username {
-			return &u
+func CreateNewUser(isAdmin bool, userName, passwordHash, email string) (userID int, isUserCreated bool) {
+	res, err := connection.Exec("INSERT INTO users (is_admin, user_name, password_hash, email) VALUES(?, ?, ?, ?)",
+		isAdmin,
+		userName,
+		passwordHash,
+		email)
+	if err != nil {
+		if driverErr, ok := err.(*mysql.MySQLError); ok {
+			if driverErr.Number == mysqlerr.ER_DUP_ENTRY {
+				// in this case we trying to create user with existing user_name
+				return 0, false
+			}
 		}
+		panic(err)
 	}
-	return nil
+	id, err := res.LastInsertId()
+	if err != nil {
+		panic(err)
+	}
+	return int(id), true
 }
 
-// GetUserByID : get user struct by his ID
-func GetUserByID(userID int) *user.User {
-	user, exist := users[userID]
-	if exist {
-		return &user
+func UpdateUser(user *User) (isUpdated bool) {
+	dbU := userToDbUser(user)
+	_, err := connection.Exec("UPDATE users set is_admin=?, user_name=?, password_hash=?, email=?, balance=?, frozen_amount=? WHERE id=?",
+		dbU.IsAdmin,
+		dbU.UserName,
+		dbU.PasswordHash,
+		dbU.Email,
+		dbU.Balance,
+		dbU.FrozenAmount,
+		dbU.ID)
+	if err != nil {
+		if driverErr, ok := err.(*mysql.MySQLError); ok {
+			if driverErr.Number == mysqlerr.ER_DUP_ENTRY {
+				// in this case we trying to update user with other existing user_name
+				return false
+			}
+		}
+		panic(err)
 	}
-	return nil
+	return true
 }
 
-// GetAllTasks : retruns pointer to tasks map
-func GetAllTasks() *map[int]task.Task {
-	return &tasks
-}
-
-// GetTask : lookup for specific task
-func GetTask(taskID int) *task.Task {
-	if task, exist := tasks[taskID]; exist {
-		return &task
+func DeleteUser(userID int) (isDeleted bool) {
+	_, err := connection.Exec("DELETE FROM users WHERE id=?", userID)
+	if err != nil {
+		return false
 	}
-	return nil
+	return true
 }
