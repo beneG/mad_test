@@ -351,10 +351,12 @@ func taskCommandHandler(c echo.Context) error {
 		t.State = storage.StateExecuting
 		t.ExecutionerID = u.ID
 		t.BeginTime = time.Now()
-		// begin transaction
+
+		tx := storage.BeginTransaction()
 		storage.UpdateTask(t)
 		storage.UpdateUser(u)
-		// end transaction
+		storage.CommitTransaction(tx)
+
 		return c.JSON(http.StatusOK, `{"error_message": "task acquired", "error_code": 0}`)
 	case "finish":
 		if t.ExecutionerID != u.ID {
@@ -380,11 +382,13 @@ func taskCommandHandler(c echo.Context) error {
 		executioner.Balance.Add(t.Cost)
 		u.Balance.Sub(t.Cost)
 		u.FrozenAmount.Sub(t.Cost)
-		// begin transaction
+
+		tx := storage.BeginTransaction()
 		storage.UpdateTask(t)
 		storage.UpdateUser(u)
 		storage.UpdateUser(executioner)
-		// end transaction
+		storage.CommitTransaction(tx)
+
 		return c.JSON(http.StatusOK, `{"error_message": "task accepted", "error_code": 0}`)
 	case "close":
 		if t.CustomerID != u.ID {

@@ -47,6 +47,15 @@ func init() {
 	}
 }
 
+func BeginTransaction() *sql.Tx {
+	tx, _ := connection.Begin()
+	return tx
+}
+
+func CommitTransaction(tx *sql.Tx) {
+	tx.Commit()
+}
+
 func dbUserToUser(val *dbUser) *User {
 	retVal := User{
 		ID:           val.ID,
